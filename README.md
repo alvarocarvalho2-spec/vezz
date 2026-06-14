@@ -5,6 +5,15 @@ Sistema completo para clínicas e consultórios gerenciarem filas de atendimento
 ## Tecnologias
 - PHP 7.4+ (PDO, Sessions)
 - MySQL
+
+````markdown
+# VEZZ – Plataforma Inteligente de Gestão de Atendimentos e Filas
+
+Sistema completo para clínicas e consultórios gerenciarem filas de atendimento e agendamentos de pacientes.
+
+## Tecnologias
+- PHP 7.4+ (PDO, Sessions)
+- MySQL
 - Bootstrap 5
 - JavaScript Vanilla + AJAX
 
@@ -33,31 +42,31 @@ Sistema completo para clínicas e consultórios gerenciarem filas de atendimento
 │   ├── auth.php
 │   ├── functions.php
 │   ├── header.php
-│   └── footer.php
+    └── footer.php
 └── sql/
-   └── "SQL script VEZZ.sql" (arquivo principal de criação do banco)
+    └── "SQL script VEZZ.sql" (arquivo principal de criação do banco)
 ```
 
 ## Instalação (XAMPP / WAMP / similar)
 
 1. **Copiar arquivos**
-   - Copie a pasta `vezz` inteira para dentro de `C:\xampp\htdocs\` (Windows) ou `/var/www/html/` (Linux).
+    - Copie a pasta `vezz` inteira para dentro de `C:\xampp\htdocs\` (Windows) ou `/var/www/html/` (Linux).
 
 2. **Criar o banco de dados**
-   - Abra o phpMyAdmin (http://localhost/phpmyadmin).
-   - Importe o arquivo `vezz/sql/SQL script VEZZ.sql`.
-   - O script criará o banco `vezz` e as tabelas (o arquivo não contém dados de exemplo).
+    - Abra o phpMyAdmin (http://localhost/phpmyadmin).
+    - Importe o arquivo `vezz/sql/SQL script VEZZ.sql`.
+    - O script criará o banco `vezz` e as tabelas (o arquivo não contém dados de exemplo).
 
 3. **Configurar conexão (se necessário)**
-   - Abra `vezz/includes/config.php`.
-   - Ajuste `DB_USER` e `DB_PASS` conforme seu MySQL local:
-     ```php
-     define('DB_USER', 'root');
-     define('DB_PASS', '');   // senha do root no XAMPP geralmente é vazia
-     ```
+    - Abra `vezz/includes/config.php`.
+    - Ajuste `DB_USER` e `DB_PASS` conforme seu MySQL local:
+       ```php
+       define('DB_USER', 'root');
+       define('DB_PASS', '');   // senha do root no XAMPP geralmente é vazia
+       ```
 
 4. **Acessar o sistema**
-   - Navegue para: `http://localhost/vezz/`
+    - Navegue para: `http://localhost/vezz/`
 
 ## Dados de Exemplo
 
@@ -82,24 +91,7 @@ Este repositório **não** inclui dados de exemplo por padrão (para segurança 
 - Prepared Statements (PDO) em todas as queries.
 - Interface responsiva com Bootstrap 5.
 
-## Deploy moderno (Supabase + Docker)
-
-Se o banco já está no Supabase (Postgres), você pode hospedar o restante da aplicação PHP em um serviço que rode contêineres Docker (Render, Fly.io, DigitalOcean App Platform, Railway, etc.). O projeto já inclui um `Dockerfile` que instala `pdo_pgsql` e roda Apache.
-
-Passos principais:
-
-- Configure variáveis de ambiente no provedor (não commit `.env`):
-   - `DB_HOST` = host do Supabase (ex: `db.xxxxxx.supabase.co`)
-   - `DB_PORT` = `5432`
-   - `DB_NAME` = nome do banco (ex: `postgres`)
-   - `DB_USER` = usuário do Supabase
-   - `DB_PASSWORD` = senha
-   - `BASE_URL` = `/` ou subpath da aplicação
-
-- O arquivo `includes/config.php` já lê `getenv()` e aplica `sslmode=require`, portanto não é necessária alteração de código.
-
-## Executar localmente com Docker Compose
-
+````
 Crie um arquivo `docker-compose.yml` (exemplo abaixo) para testar localmente apontando para o Supabase ou outro Postgres:
 
 ```yaml
