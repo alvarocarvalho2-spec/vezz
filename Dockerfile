@@ -30,4 +30,13 @@ RUN chown -R www-data:www-data /var/www/html
 
 EXPOSE 80
 
+# Configure php-fpm to use a Unix socket and ensure socket dir exists
+RUN if [ -f /usr/local/etc/php-fpm.d/www.conf ]; then \
+            sed -i "s|listen = .*|listen = /var/run/php/php-fpm.sock|" /usr/local/etc/php-fpm.d/www.conf || true; \
+            sed -i "s|;listen.owner = www-data|listen.owner = www-data|" /usr/local/etc/php-fpm.d/www.conf || true; \
+            sed -i "s|;listen.group = www-data|listen.group = www-data|" /usr/local/etc/php-fpm.d/www.conf || true; \
+            sed -i "s|;listen.mode = 0660|listen.mode = 0660|" /usr/local/etc/php-fpm.d/www.conf || true; \
+            mkdir -p /var/run/php && chown -R www-data:www-data /var/run/php; \
+        fi
+
 CMD ["/usr/bin/supervisord","-n","-c","/etc/supervisor/conf.d/supervisord.conf"]
