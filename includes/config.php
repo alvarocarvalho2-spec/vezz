@@ -25,6 +25,14 @@ function load_env($path)
 
 load_env(dirname(__DIR__) . DIRECTORY_SEPARATOR . '.env');
 
+// Permitir forçar o uso da API via variável USE_SUPABASE_API=1
+$force_use_api = false;
+$use_api_env = getenv('USE_SUPABASE_API');
+if ($use_api_env !== false) {
+    $ue = strtolower(trim($use_api_env));
+    if (in_array($ue, ['1','true','yes','on'], true)) $force_use_api = true;
+}
+
 // Variáveis de configuração (permite SUPABASE_* ou DB_*)
 $DB_HOST = getenv('DB_HOST') ?: getenv('SUPABASE_HOST') ?: '127.0.0.1';
 $DB_PORT = getenv('DB_PORT') ?: getenv('SUPABASE_PORT') ?: '5432';
@@ -43,7 +51,15 @@ if (session_status() === PHP_SESSION_NONE) {
 $use_supabase_api = false;
 $supabase_url = getenv('SUPABASE_URL') ?: '';
 $supabase_key = getenv('SUPABASE_SERVICE_ROLE_KEY') ?: getenv('SUPABASE_ANON_KEY') ?: '';
-if (!empty($supabase_url) && !empty($supabase_key)) {
+
+// Decisão: usar API se for forçado ou se as variáveis essencias estiverem presentes
+if ($force_use_api) {
+    if (empty($supabase_url) || empty($supabase_key)) {
+        die('USE_SUPABASE_API está definido, mas SUPABASE_URL ou SUPABASE_ANON_KEY/SUPABASE_SERVICE_ROLE_KEY não estão configuradas. Verifique suas variáveis de ambiente.');
+    }
+    $use_supabase_api = true;
+    $pdo = null; // não inicializa PDO quando operando via API
+} elseif (!empty($supabase_url) && !empty($supabase_key)) {
     $use_supabase_api = true;
     // não inicializa PDO para evitar erro de conexão quando só houver API disponível
     $pdo = null;
