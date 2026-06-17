@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: VEZZ-web
+    env: docker
+    branch: main
+    plan: starter
+    dockerfilePath: Dockerfile
+    buildCommand: ''
+    autoDeploy: true
+    healthCheckPath: /
+    envVars:
+      - key: SUPABASE_URL
+        value: ""
+      - key: SUPABASE_ANON_KEY
+        value: ""
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        value: ""
+      - key: USE_SUPABASE_API
+        value: "1"

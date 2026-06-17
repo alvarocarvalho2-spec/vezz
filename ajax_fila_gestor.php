@@ -11,7 +11,20 @@ if (!isLoggedIn() || getUserType() !== 'gestor') {
 
 $id_clinica = getClinicaId();
 
-$stmt = $pdo->prepare("SELECT c.*, p.nome AS paciente_nome
+if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+    $dados = obterDadosFilaGestor($pdo, $id_clinica);
+    $atual = $dados['atendimento_atual'] ?? null;
+    $aguardando = $dados['aguardando'] ?? [];
+    // Normalizar chave paciente_nome para compatibilidade com templates
+    if ($atual) {
+        $atual['paciente_nome'] = $atual['nome_paciente'] ?? $atual['nome'] ?? null;
+    }
+    foreach ($aguardando as &$a) {
+        $a['paciente_nome'] = $a['nome_paciente'] ?? $a['nome'] ?? null;
+    }
+    unset($a);
+} else {
+    $stmt = $pdo->prepare("SELECT c.*, p.nome AS paciente_nome
                        FROM tb_consulta c
                        JOIN tb_paciente p ON p.id_paciente = c.id_paciente
                                              WHERE c.id_clinica = :id_clinica
@@ -19,18 +32,19 @@ $stmt = $pdo->prepare("SELECT c.*, p.nome AS paciente_nome
                          AND c.status = 'Em Atendimento'
                        ORDER BY c.data_hora ASC
                        LIMIT 1");
-$stmt->execute([':id_clinica' => $id_clinica]);
-$atual = $stmt->fetch();
+    $stmt->execute([':id_clinica' => $id_clinica]);
+    $atual = $stmt->fetch();
 
-$stmt = $pdo->prepare("SELECT c.*, p.nome AS paciente_nome
+    $stmt = $pdo->prepare("SELECT c.*, p.nome AS paciente_nome
                        FROM tb_consulta c
                        JOIN tb_paciente p ON p.id_paciente = c.id_paciente
                                              WHERE c.id_clinica = :id_clinica
                                                  AND DATE(c.data_hora) = CURRENT_DATE
                          AND c.status = 'Agendada'
                        ORDER BY c.data_hora ASC");
-$stmt->execute([':id_clinica' => $id_clinica]);
-$aguardando = $stmt->fetchAll();
+    $stmt->execute([':id_clinica' => $id_clinica]);
+    $aguardando = $stmt->fetchAll();
+}
 
 ob_start();
 ?>

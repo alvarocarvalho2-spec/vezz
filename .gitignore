@@ -1,0 +1,15 @@
+.env
+vendor/
+node_modules/
+logs/
+tests/
+*.log
+*.bak
+.DS_Store
+/.vscode/
+/.idea/
+/.env.local
+/.env.*.local
+coverage/
+composer.lock
+debug_backtrace.log

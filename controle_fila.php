@@ -64,7 +64,7 @@ require_once __DIR__ . '/includes/header.php';
                     <div class="queue-item em-atendimento">
                         <h5 class="text-success mb-2"><i class="fa-solid fa-user-doctor"></i> Em Atendimento</h5>
                         <p class="mb-1"><strong><?= e($a['nome_paciente']) ?></strong></p>
-                        <p class="mb-2 text-muted"><?= e($a['data_hora']) ?> | <?= e($a['telefone']) ?></p>
+                        <p class="mb-2 text-muted"><?= e($a['data_hora'] ?? '') ?> | <?= e($a['telefone'] ?? '') ?></p>
                         <form method="POST" action="controle_fila.php" class="d-inline">
                             <input type="hidden" name="acao" value="finalizar">
                             <input type="hidden" name="id_consulta" value="<?= (int) $a['id_consulta'] ?>">
@@ -113,7 +113,7 @@ require_once __DIR__ . '/includes/header.php';
                     <div>
                         <span class="badge badge-posicao me-2">#<?= (int) $item['posicao'] ?></span>
                         <strong><?= e($item['nome_paciente']) ?></strong>
-                        <br><small class="text-muted"><?= e($item['data_hora']) ?> | <?= e($item['telefone']) ?></small>
+                        <br><small class="text-muted"><?= e($item['data_hora'] ?? '') ?> | <?= e($item['telefone'] ?? '') ?></small>
                     </div>
                     <form method="POST" action="controle_fila.php" class="d-inline">
                         <input type="hidden" name="acao" value="iniciar">

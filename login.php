@@ -3,6 +3,9 @@ $pageTitle = 'Login';
 require_once __DIR__ . '/includes/config.php';
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/functions.php';
+if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+    require_once __DIR__ . '/includes/supabase_api.php';
+}
 
 if (isLoggedIn()) {
     header('Location: ' . ($_SESSION['usuario_tipo'] === 'gestor' ? 'dashboard_gestor.php' : 'dashboard_paciente.php'));
@@ -23,12 +26,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $tipoLogin = $_POST['tipo'] ?? 'paciente';
 
         if ($tipoLogin === 'gestor') {
-            $stmt = $pdo->prepare('
-                SELECT id_gestor AS id, nome, email, senha, id_clinica
-                FROM tb_gestor WHERE email = ?
-            ');
-            $stmt->execute([$email]);
-            $usuario = $stmt->fetch();
+            if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+                $path = 'tb_gestor?select=id_gestor,nome,email,senha,id_clinica&email=eq.' . rawurlencode($email);
+                $res = supabase_request('GET', $path);
+                $usuario = ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) ? $res['body'][0] : null;
+                if ($usuario) {
+                    // mapear id
+                    $usuario['id'] = $usuario['id_gestor'] ?? $usuario['id'] ?? null;
+                }
+            } else {
+                $stmt = $pdo->prepare('
+                    SELECT id_gestor AS id, nome, email, senha, id_clinica
+                    FROM tb_gestor WHERE email = ?
+                ');
+                $stmt->execute([$email]);
+                $usuario = $stmt->fetch();
+            }
 
             if ($usuario && password_verify($senha, $usuario['senha'])) {
                 unset($usuario['senha']);
@@ -38,9 +51,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
             }
         } else {
-            $stmt = $pdo->prepare('SELECT id_paciente AS id, nome, email, senha FROM tb_paciente WHERE email = ?');
-            $stmt->execute([$email]);
-            $usuario = $stmt->fetch();
+            if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+                $path = 'tb_paciente?select=id_paciente,nome,email,senha&email=eq.' . rawurlencode($email);
+                $res = supabase_request('GET', $path);
+                $usuario = ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) ? $res['body'][0] : null;
+                if ($usuario) {
+                    $usuario['id'] = $usuario['id_paciente'] ?? $usuario['id'] ?? null;
+                }
+            } else {
+                $stmt = $pdo->prepare('SELECT id_paciente AS id, nome, email, senha FROM tb_paciente WHERE email = ?');
+                $stmt->execute([$email]);
+                $usuario = $stmt->fetch();
+            }
 
             if ($usuario && password_verify($senha, $usuario['senha'])) {
                 unset($usuario['senha']);

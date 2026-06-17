@@ -9,17 +9,37 @@ if (isLoggedIn()) {
     exit;
 }
 
-$clinicas = $pdo->query('
-    SELECT c.id_clinica, c.nome, e.cidade
-    FROM tb_clinica c
-    INNER JOIN tb_endereco e ON e.id_clinica = c.id_clinica
-    ORDER BY c.nome ASC
-')->fetchAll();
+if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+    $clinicas = [];
+    $res = supabase_request('GET', 'tb_clinica?select=id_clinica,nome,tb_endereco(cidade)&order=nome.asc');
+    if ($res['status'] >= 200 && is_array($res['body'])) {
+        foreach ($res['body'] as $c) {
+            $addr = relation_first($c['tb_endereco'] ?? []);
+            $clinicas[] = [
+                'id_clinica' => $c['id_clinica'],
+                'nome' => $c['nome'],
+                'cidade' => $addr['cidade'] ?? null,
+            ];
+        }
+    }
+    if (empty($clinicas)) {
+        setFlash('warning', 'Cadastre uma clínica antes de registrar o gestor.');
+        header('Location: cadastro_clinica.php');
+        exit;
+    }
+} else {
+    $clinicas = $pdo->query('
+        SELECT c.id_clinica, c.nome, e.cidade
+        FROM tb_clinica c
+        INNER JOIN tb_endereco e ON e.id_clinica = c.id_clinica
+        ORDER BY c.nome ASC
+    ')->fetchAll();
 
-if (empty($clinicas)) {
-    setFlash('warning', 'Cadastre uma clínica antes de registrar o gestor.');
-    header('Location: cadastro_clinica.php');
-    exit;
+    if (empty($clinicas)) {
+        setFlash('warning', 'Cadastre uma clínica antes de registrar o gestor.');
+        header('Location: cadastro_clinica.php');
+        exit;
+    }
 }
 
 $idClinicaPre = (int) ($_GET['id_clinica'] ?? $_POST['id_clinica'] ?? 0);
@@ -53,34 +73,63 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if (empty($erros)) {
-        $stmt = $pdo->prepare('SELECT id_clinica FROM tb_clinica WHERE id_clinica = ?');
-        $stmt->execute([$idClinica]);
-        if (!$stmt->fetch()) {
-            $erros[] = 'Clínica selecionada não encontrada.';
+        if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+            $res = supabase_request('GET', 'tb_clinica?select=id_clinica&id_clinica=eq.' . rawurlencode($idClinica) . '&limit=1');
+            if (!($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0)) {
+                $erros[] = 'Clínica selecionada não encontrada.';
+            }
+        } else {
+            $stmt = $pdo->prepare('SELECT id_clinica FROM tb_clinica WHERE id_clinica = ?');
+            $stmt->execute([$idClinica]);
+            if (!$stmt->fetch()) {
+                $erros[] = 'Clínica selecionada não encontrada.';
+            }
         }
     }
 
     if (empty($erros)) {
-        $stmt = $pdo->prepare('SELECT id_gestor FROM tb_gestor WHERE email = ?');
-        $stmt->execute([$email]);
-        if ($stmt->fetch()) {
-            $erros[] = 'E-mail já cadastrado.';
+        if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+            $res = supabase_request('GET', 'tb_gestor?select=id_gestor&email=eq.' . rawurlencode($email) . '&limit=1');
+            if ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) {
+                $erros[] = 'E-mail já cadastrado.';
+            } else {
+                try {
+                    supabase_insert('tb_gestor', [
+                        'nome' => $nome,
+                        'email' => $email,
+                        'senha' => password_hash($senha, PASSWORD_BCRYPT),
+                        'cargo' => $cargo,
+                        'id_clinica' => $idClinica,
+                    ]);
+                    setFlash('success', 'Gestor cadastrado com sucesso! Faça login para acessar o painel.');
+                    header('Location: login.php');
+                    exit;
+                } catch (Exception $e) {
+                    $erros[] = $e->getMessage() ?: 'Erro ao cadastrar gestor (API).';
+                }
+            }
         } else {
-            $stmt = $pdo->prepare('
-                INSERT INTO tb_gestor (nome, email, senha, cargo, id_clinica)
-                VALUES (?, ?, ?, ?, ?)
-            ');
-            $stmt->execute([
-                $nome,
-                $email,
-                password_hash($senha, PASSWORD_BCRYPT),
-                $cargo,
-                $idClinica,
-            ]);
+            $stmt = $pdo->prepare('SELECT id_gestor FROM tb_gestor WHERE email = ?');
+            $stmt->execute([$email]);
+            if ($stmt->fetch()) {
+                $erros[] = 'E-mail já cadastrado.';
+            } else {
+                $stmt = $pdo->prepare('
+                    INSERT INTO tb_gestor (nome, email, senha, cargo, id_clinica)
+                    VALUES (?, ?, ?, ?, ?)
+                ');
+                $stmt->execute([
+                    $nome,
+                    $email,
+                    password_hash($senha, PASSWORD_BCRYPT),
+                    $cargo,
+                    $idClinica,
+                ]);
 
-            setFlash('success', 'Gestor cadastrado com sucesso! Faça login para acessar o painel.');
-            header('Location: login.php');
-            exit;
+                setFlash('success', 'Gestor cadastrado com sucesso! Faça login para acessar o painel.');
+                header('Location: login.php');
+                exit;
+            }
         }
     }
 }
@@ -112,7 +161,7 @@ require_once __DIR__ . '/includes/header.php';
                         <?php foreach ($clinicas as $c): ?>
                             <option value="<?= (int) $c['id_clinica'] ?>"
                                 <?= $idClinicaPre === (int) $c['id_clinica'] ? 'selected' : '' ?>>
-                                <?= e($c['nome']) ?> — <?= e($c['cidade']) ?>
+                                <?= e($c['nome']) ?> — <?= e($c['cidade'] ?? '') ?>
                             </option>
                         <?php endforeach; ?>
                     </select>

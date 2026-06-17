@@ -4,7 +4,10 @@
  */
 
 require_once __DIR__ . '/config.php';
-
+// Se em modo API, carregamos o cliente Supabase
+if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+    require_once __DIR__ . '/supabase_api.php';
+}
 /** Minutos estimados por posição na fila */
 define('MINUTOS_POR_POSICAO', 10);
 
@@ -18,6 +21,24 @@ define('HORA_FIM', 18);
 function e($str)
 {
     return htmlspecialchars((string) $str, ENT_QUOTES, 'UTF-8');
+}
+
+/**
+ * Helpers de sessão: obter informações do usuário atual
+ */
+function getUserId()
+{
+    return isset($_SESSION['usuario_id']) ? (int) $_SESSION['usuario_id'] : 0;
+}
+
+function getUserType()
+{
+    return $_SESSION['usuario_tipo'] ?? null;
+}
+
+function getClinicaId()
+{
+    return isset($_SESSION['id_clinica']) ? (int) $_SESSION['id_clinica'] : 0;
 }
 
 /**
@@ -210,17 +231,57 @@ function obterTempoEstimado($posicao)
 /**
  * Obtém consultas na fila de uma clínica (dia atual, Agendada ou Em Atendimento)
  */
+// Normaliza o valor de uma relação retornada pelo PostgREST: aceita array numericamente indexado
+// ou um objeto associativo único e retorna o primeiro registro como array associativo.
+function relation_first($rel)
+{
+    if (empty($rel)) return [];
+    if (!is_array($rel)) return [];
+    if (isset($rel[0])) return $rel[0];
+    // já é um objeto associativo (PostgREST às vezes retorna objeto em vez de array)
+    return $rel;
+}
+
 function obterConsultasFila($pdo, $idClinica)
 {
-    $stmt = $pdo->prepare("
-                SELECT c.*, p.nome AS nome_paciente, p.telefone AS telefone_paciente
-                FROM tb_consulta c
-                INNER JOIN tb_paciente p ON p.id_paciente = c.id_paciente
-                WHERE c.id_clinica = ?
-                    AND DATE(c.data_hora) = CURRENT_DATE
-                    AND c.status IN ('Agendada', 'Em Atendimento')
-                ORDER BY c.data_hora ASC
-                ");
+    if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+        $today = date('Y-m-d');
+        $path = "tb_consulta?select=*,tb_paciente(id_paciente,nome,telefone)&id_clinica=eq." . rawurlencode($idClinica)
+            . "&status=in.(Agendada,Em%20Atendimento)&" . supabase_day_range_query($today) . "&order=data_hora.asc";
+        $res = supabase_request('GET', $path);
+        if ($res['status'] >= 200 && $res['status'] < 300 && is_array($res['body'])) {
+            $out = [];
+            foreach ($res['body'] as $row) {
+                // Normalizar diferentes formatos de resultado (relações mapeadas ou campos já achatados)
+                $nome = null;
+                $telefone = null;
+                if (!empty($row['tb_paciente']) && is_array($row['tb_paciente'])) {
+                    $p = relation_first($row['tb_paciente']);
+                    $nome = $p['nome'] ?? null;
+                    $telefone = $p['telefone'] ?? null;
+                }
+                // fallback: campos achatados que podem existir em alguns outputs
+                if (empty($nome)) {
+                    $nome = $row['nome_paciente'] ?? $row['paciente_nome'] ?? $row['nome'] ?? null;
+                }
+                if (empty($telefone)) {
+                    $telefone = $row['telefone_paciente'] ?? $row['telefone'] ?? null;
+                }
+                // garantir nomes/telefones em chaves consistentes para todas as views
+                $row['nome_paciente'] = $nome;
+                $row['telefone_paciente'] = $telefone;
+                // chaves comuns usadas em templates
+                $row['telefone'] = $telefone;
+                $row['nome'] = $nome;
+                if (isset($row['tb_paciente'])) unset($row['tb_paciente']);
+                $out[] = $row;
+            }
+            return $out;
+        }
+        return [];
+    }
+
+    $stmt = $pdo->prepare("\n                SELECT c.*, p.nome AS nome_paciente, p.telefone AS telefone_paciente\n                FROM tb_consulta c\n                INNER JOIN tb_paciente p ON p.id_paciente = c.id_paciente\n                WHERE c.id_clinica = ?\n                    AND DATE(c.data_hora) = CURRENT_DATE\n                    AND c.status IN ('Agendada', 'Em Atendimento')\n                ORDER BY c.data_hora ASC\n                ");
     $stmt->execute([$idClinica]);
     return $stmt->fetchAll();
 }
@@ -255,9 +316,18 @@ function recalcularPosicoesFila($pdo, $idClinica)
     foreach ($consultas as $index => $consulta) {
         $posicao = $index + 1;
 
-        $stmt = $pdo->prepare("
-            SELECT id_fila_atendimento FROM tb_fila_atendimento WHERE id_consulta = ?
-        ");
+        if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+            // atualiza via REST (service role key necessário)
+            $query = 'id_consulta=eq.' . rawurlencode($consulta['id_consulta']);
+            try {
+                supabase_update('tb_fila_atendimento', $query, ['posicao' => $posicao]);
+            } catch (Exception $e) {
+                error_log('recalcularPosicoesFila supabase_update error: ' . $e->getMessage());
+            }
+            continue;
+        }
+
+        $stmt = $pdo->prepare("\n            SELECT id_fila_atendimento FROM tb_fila_atendimento WHERE id_consulta = ?\n        ");
         $stmt->execute([$consulta['id_consulta']]);
         $fila = $stmt->fetch();
 
@@ -273,14 +343,51 @@ function recalcularPosicoesFila($pdo, $idClinica)
  */
 function iniciarAtendimento($pdo, $idConsulta, $idClinica)
 {
+    if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+        // Fluxo via Supabase REST (sem transação atômica): validar e aplicar alterações
+        $today = date('Y-m-d');
+        // buscar consulta
+        $path = 'tb_consulta?select=id_consulta,data_hora,status&id_consulta=eq.' . rawurlencode($idConsulta)
+            . '&id_clinica=eq.' . rawurlencode($idClinica) . '&' . supabase_day_range_query($today);
+        $res = supabase_request('GET', $path);
+        $consulta = ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) ? $res['body'][0] : null;
+
+        if (!$consulta || ($consulta['status'] ?? '') !== 'Agendada') {
+            throw new Exception('Consulta não encontrada ou não está agendada.');
+        }
+
+        // Verifica se já existe atendimento em andamento
+        $path2 = 'tb_consulta?id_clinica=eq.' . rawurlencode($idClinica) . '&status=eq.Em%20Atendimento&' . supabase_day_range_query($today);
+        $res2 = supabase_request('GET', $path2);
+        if ($res2['status'] >= 200 && is_array($res2['body']) && count($res2['body']) > 0) {
+            throw new Exception('Já existe um atendimento em andamento. Finalize-o antes de iniciar outro.');
+        }
+
+        // atualiza status da consulta (write via service role)
+        supabase_update('tb_consulta', 'id_consulta=eq.' . rawurlencode($idConsulta), ['status' => 'Em Atendimento']);
+
+        $posicao = calcularPosicaoFila($pdo, $idClinica, $idConsulta);
+
+        // verificar fila existente
+        $rf = supabase_request('GET', 'tb_fila_atendimento?select=id_fila_atendimento&id_consulta=eq.' . rawurlencode($idConsulta));
+        $filaExistente = ($rf['status'] >= 200 && is_array($rf['body']) && count($rf['body']) > 0) ? $rf['body'][0] : null;
+
+        if ($filaExistente) {
+            supabase_update('tb_fila_atendimento', 'id_consulta=eq.' . rawurlencode($idConsulta), ['hora_inicio' => date('c'), 'posicao' => $posicao]);
+        } else {
+            $horaEntrada = $consulta['data_hora'] ?? null;
+            supabase_insert('tb_fila_atendimento', ['posicao' => $posicao, 'hora_entrada' => $horaEntrada, 'hora_inicio' => date('c'), 'id_consulta' => (int)$idConsulta]);
+        }
+
+        recalcularPosicoesFila($pdo, $idClinica);
+        return true;
+    }
+
+    // Fallback PDO
     $pdo->beginTransaction();
 
     try {
-        $stmt = $pdo->prepare("
-            SELECT id_consulta, data_hora, status
-                FROM tb_consulta
-                WHERE id_consulta = ? AND id_clinica = ? AND DATE(data_hora) = CURRENT_DATE
-        ");
+        $stmt = $pdo->prepare("\n            SELECT id_consulta, data_hora, status\n                FROM tb_consulta\n                WHERE id_consulta = ? AND id_clinica = ? AND DATE(data_hora) = CURRENT_DATE\n        ");
         $stmt->execute([$idConsulta, $idClinica]);
         $consulta = $stmt->fetch();
 
@@ -289,10 +396,7 @@ function iniciarAtendimento($pdo, $idConsulta, $idClinica)
         }
 
         // Verifica se já existe atendimento em andamento
-        $stmt = $pdo->prepare("
-            SELECT id_consulta FROM tb_consulta
-                WHERE id_clinica = ? AND DATE(data_hora) = CURRENT_DATE AND status = 'Em Atendimento'
-        ");
+        $stmt = $pdo->prepare("\n            SELECT id_consulta FROM tb_consulta\n                WHERE id_clinica = ? AND DATE(data_hora) = CURRENT_DATE AND status = 'Em Atendimento'\n        ");
         $stmt->execute([$idClinica]);
         if ($stmt->fetch()) {
             throw new Exception('Já existe um atendimento em andamento. Finalize-o antes de iniciar outro.');
@@ -308,17 +412,10 @@ function iniciarAtendimento($pdo, $idConsulta, $idClinica)
         $filaExistente = $stmt->fetch();
 
         if ($filaExistente) {
-            $upd = $pdo->prepare("
-                UPDATE tb_fila_atendimento
-                SET hora_inicio = CURRENT_TIMESTAMP, posicao = ?
-                WHERE id_consulta = ?
-            ");
+            $upd = $pdo->prepare("\n                UPDATE tb_fila_atendimento\n                SET hora_inicio = CURRENT_TIMESTAMP, posicao = ?\n                WHERE id_consulta = ?\n            ");
             $upd->execute([$posicao, $idConsulta]);
         } else {
-            $ins = $pdo->prepare("
-                INSERT INTO tb_fila_atendimento (posicao, hora_entrada, hora_inicio, id_consulta)
-                VALUES (?, ?, CURRENT_TIMESTAMP, ?)
-            ");
+            $ins = $pdo->prepare("\n                INSERT INTO tb_fila_atendimento (posicao, hora_entrada, hora_inicio, id_consulta)\n                VALUES (?, ?, CURRENT_TIMESTAMP, ?)\n            ");
             $ins->execute([$posicao, $consulta['data_hora'], $idConsulta]);
         }
 
@@ -336,13 +433,27 @@ function iniciarAtendimento($pdo, $idConsulta, $idClinica)
  */
 function finalizarAtendimento($pdo, $idConsulta, $idClinica)
 {
+    if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+        // via Supabase REST
+        // verificar existência
+        $path = 'tb_consulta?select=id_consulta,status&id_consulta=eq.' . rawurlencode($idConsulta)
+            . '&id_clinica=eq.' . rawurlencode($idClinica) . '&status=eq.Em%20Atendimento';
+        $res = supabase_request('GET', $path);
+        $consulta = ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) ? $res['body'][0] : null;
+        if (!$consulta) {
+            throw new Exception('Nenhum atendimento em andamento encontrado.');
+        }
+
+        supabase_update('tb_consulta', 'id_consulta=eq.' . rawurlencode($idConsulta), ['status' => 'Finalizada']);
+        supabase_update('tb_fila_atendimento', 'id_consulta=eq.' . rawurlencode($idConsulta), ['hora_fim' => date('c')]);
+        recalcularPosicoesFila($pdo, $idClinica);
+        return true;
+    }
+
     $pdo->beginTransaction();
 
     try {
-        $stmt = $pdo->prepare("
-            SELECT id_consulta, status FROM tb_consulta
-            WHERE id_consulta = ? AND id_clinica = ? AND status = 'Em Atendimento'
-        ");
+        $stmt = $pdo->prepare("\n            SELECT id_consulta, status FROM tb_consulta\n            WHERE id_consulta = ? AND id_clinica = ? AND status = 'Em Atendimento'\n        ");
         $stmt->execute([$idConsulta, $idClinica]);
         $consulta = $stmt->fetch();
 
@@ -353,9 +464,7 @@ function finalizarAtendimento($pdo, $idConsulta, $idClinica)
         $upd = $pdo->prepare("UPDATE tb_consulta SET status = 'Finalizada' WHERE id_consulta = ?");
         $upd->execute([$idConsulta]);
 
-        $upd = $pdo->prepare("
-            UPDATE tb_fila_atendimento SET hora_fim = CURRENT_TIMESTAMP WHERE id_consulta = ?
-        ");
+        $upd = $pdo->prepare("\n            UPDATE tb_fila_atendimento SET hora_fim = CURRENT_TIMESTAMP WHERE id_consulta = ?\n        ");
         $upd->execute([$idConsulta]);
 
         recalcularPosicoesFila($pdo, $idClinica);
@@ -372,21 +481,30 @@ function finalizarAtendimento($pdo, $idConsulta, $idClinica)
  */
 function chamarProximoPaciente($pdo, $idClinica)
 {
-    $stmt = $pdo->prepare(" 
-        SELECT id_consulta FROM tb_consulta
-        WHERE id_clinica = ? AND DATE(data_hora) = CURRENT_DATE AND status = 'Em Atendimento'
-    ");
+    if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+        $today = date('Y-m-d');
+        $res = supabase_request('GET', 'tb_consulta?id_clinica=eq.' . rawurlencode($idClinica) . '&status=eq.Em%20Atendimento&' . supabase_day_range_query($today));
+        if ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) {
+            throw new Exception('Finalize o atendimento atual antes de chamar o próximo.');
+        }
+
+        $res2 = supabase_request('GET', 'tb_consulta?select=id_consulta&id_clinica=eq.' . rawurlencode($idClinica) . '&status=eq.Agendada&' . supabase_day_range_query($today) . '&order=data_hora.asc&limit=1');
+        $proximo = ($res2['status'] >= 200 && is_array($res2['body']) && count($res2['body']) > 0) ? $res2['body'][0] : null;
+
+        if (!$proximo) {
+            throw new Exception('Não há pacientes aguardando na fila.');
+        }
+
+        return iniciarAtendimento($pdo, $proximo['id_consulta'], $idClinica);
+    }
+
+    $stmt = $pdo->prepare(" \n        SELECT id_consulta FROM tb_consulta\n        WHERE id_clinica = ? AND DATE(data_hora) = CURRENT_DATE AND status = 'Em Atendimento'\n    ");
     $stmt->execute([$idClinica]);
     if ($stmt->fetch()) {
         throw new Exception('Finalize o atendimento atual antes de chamar o próximo.');
     }
 
-    $stmt = $pdo->prepare(" 
-        SELECT id_consulta FROM tb_consulta
-        WHERE id_clinica = ? AND DATE(data_hora) = CURRENT_DATE AND status = 'Agendada'
-        ORDER BY data_hora ASC
-        LIMIT 1
-    ");
+    $stmt = $pdo->prepare(" \n        SELECT id_consulta FROM tb_consulta\n        WHERE id_clinica = ? AND DATE(data_hora) = CURRENT_DATE AND status = 'Agendada'\n        ORDER BY data_hora ASC\n        LIMIT 1\n    ");
     $stmt->execute([$idClinica]);
     $proximo = $stmt->fetch();
 
@@ -511,12 +629,21 @@ function validarDataHoraAgendamento(DateTime $dataHora, $horaInicio = null, $hor
  */
 function horarioOcupadoNaClinica($pdo, $idClinica, $dataHora, $idConsultaExcluir = null)
 {
-    $sql = "
-        SELECT COUNT(*) FROM tb_consulta
-        WHERE id_clinica = ?
-          AND data_hora = ?
-          AND status IN ('Agendada', 'Em Atendimento')
-    ";
+    if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+        // consulta via REST por igualdade de timestamp
+        $path = 'tb_consulta?select=id_consulta&id_clinica=eq.' . rawurlencode($idClinica)
+            . '&data_hora=eq.' . rawurlencode($dataHora) . '&status=in.(Agendada,Em%20Atendimento)';
+        if ($idConsultaExcluir) {
+            $path .= '&id_consulta=neq.' . rawurlencode($idConsultaExcluir);
+        }
+        $res = supabase_request('GET', $path);
+        if ($res['status'] >= 200 && $res['status'] < 300 && is_array($res['body'])) {
+            return count($res['body']) > 0;
+        }
+        return false;
+    }
+
+    $sql = "\n        SELECT COUNT(*) FROM tb_consulta\n        WHERE id_clinica = ?\n          AND data_hora = ?\n          AND status IN ('Agendada', 'Em Atendimento')\n    ";
     $params = [$idClinica, $dataHora];
 
     if ($idConsultaExcluir) {
@@ -543,9 +670,14 @@ function obterHorariosDisponiveis($pdo, $idClinica, $data, $idConsultaExcluir = 
     $diaSemana = (int) $dataConsulta->format('N');
 
     // buscar horários e dias da clínica
-    $stmt = $pdo->prepare('SELECT hora_inicio, hora_fim, dias_atendimento FROM tb_clinica WHERE id_clinica = ?');
-    $stmt->execute([$idClinica]);
-    $hr = $stmt->fetch();
+    if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+        $res = supabase_request('GET', 'tb_clinica?select=hora_inicio,hora_fim,dias_atendimento&id_clinica=eq.' . rawurlencode($idClinica));
+        $hr = ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) ? $res['body'][0] : null;
+    } else {
+        $stmt = $pdo->prepare('SELECT hora_inicio, hora_fim, dias_atendimento FROM tb_clinica WHERE id_clinica = ?');
+        $stmt->execute([$idClinica]);
+        $hr = $stmt->fetch();
+    }
     if (!$hr) {
         return [];
     }
@@ -572,13 +704,25 @@ function obterHorariosDisponiveis($pdo, $idClinica, $data, $idConsultaExcluir = 
         }));
     }
 
-        $sql = "
-                SELECT CAST(data_hora AS time) AS hora
-                FROM tb_consulta
-                WHERE id_clinica = ?
-                    AND DATE(data_hora) = ?
-                    AND status IN ('Agendada', 'Em Atendimento')
-        ";
+    // obter consultas ocupadas (por data)
+    if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+        $dayQ = supabase_day_range_query($data);
+        $path = 'tb_consulta?select=data_hora&id_clinica=eq.' . rawurlencode($idClinica) . '&' . $dayQ . '&status=in.(Agendada,Em%20Atendimento)';
+        if ($idConsultaExcluir) $path .= '&id_consulta=neq.' . rawurlencode($idConsultaExcluir);
+        $res = supabase_request('GET', $path);
+        $ocupados = [];
+        if ($res['status'] >= 200 && is_array($res['body'])) {
+            foreach ($res['body'] as $r) {
+                if (!empty($r['data_hora'])) {
+                    $ocupados[] = substr($r['data_hora'], 11, 5);
+                }
+            }
+        }
+        error_log('[horarios_disponiveis_debug] ocupados_count=' . count($ocupados) . ' ocupados=' . implode(',', $ocupados));
+        return array_values(array_diff($horarios, $ocupados));
+    }
+
+    $sql = "\n                SELECT CAST(data_hora AS time) AS hora\n                FROM tb_consulta\n                WHERE id_clinica = ?\n                    AND DATE(data_hora) = ?\n                    AND status IN ('Agendada', 'Em Atendimento')\n        ";
     $params = [$idClinica, $data];
 
     if ($idConsultaExcluir) {
@@ -604,13 +748,40 @@ function obterHorariosDisponiveis($pdo, $idClinica, $data, $idConsultaExcluir = 
  */
 function pesquisarClinicas($pdo, $nome = '', $cidade = '')
 {
-    $sql = "
-        SELECT c.id_clinica, c.nome, c.telefone, c.descricao,
-               e.rua, e.numero, e.bairro, e.cidade, e.cep
-        FROM tb_clinica c
-        INNER JOIN tb_endereco e ON e.id_clinica = c.id_clinica
-        WHERE 1=1
-    ";
+    if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+        $query = [];
+        if ($nome !== '') {
+            $query[] = 'nome=ilike.%25' . rawurlencode($nome) . '%25';
+        }
+        if ($cidade !== '') {
+            $query[] = 'tb_endereco.cidade=ilike.%25' . rawurlencode($cidade) . '%25';
+        }
+        $path = 'tb_clinica?select=id_clinica,nome,telefone,descricao,tb_endereco(rua,numero,bairro,cidade,cep)';
+        if (!empty($query)) $path .= '&' . implode('&', $query);
+        $path .= '&order=nome.asc';
+        $res = supabase_request('GET', $path);
+        if ($res['status'] >= 200 && is_array($res['body'])) {
+            $out = [];
+            foreach ($res['body'] as $r) {
+                $addr = relation_first($r['tb_endereco'] ?? []);
+                $out[] = [
+                    'id_clinica' => $r['id_clinica'],
+                    'nome' => $r['nome'],
+                    'telefone' => $r['telefone'],
+                    'descricao' => $r['descricao'],
+                    'rua' => $addr['rua'] ?? null,
+                    'numero' => $addr['numero'] ?? null,
+                    'bairro' => $addr['bairro'] ?? null,
+                    'cidade' => $addr['cidade'] ?? null,
+                    'cep' => $addr['cep'] ?? null,
+                ];
+            }
+            return $out;
+        }
+        return [];
+    }
+
+    $sql = "\n        SELECT c.id_clinica, c.nome, c.telefone, c.descricao,\n               e.rua, e.numero, e.bairro, e.cidade, e.cep\n        FROM tb_clinica c\n        INNER JOIN tb_endereco e ON e.id_clinica = c.id_clinica\n        WHERE 1=1\n    ";
     $params = [];
 
     if ($nome !== '') {
@@ -707,16 +878,56 @@ function obterDadosFilaGestor($pdo, $idClinica)
  */
 function obterDadosFilaPaciente($pdo, $idPaciente)
 {
-    $stmt = $pdo->prepare("
-        SELECT c.*, cl.nome AS nome_clinica
-        FROM tb_consulta c
-        INNER JOIN tb_clinica cl ON cl.id_clinica = c.id_clinica
-                WHERE c.id_paciente = ?
-                    AND DATE(c.data_hora) = CURRENT_DATE
-          AND c.status IN ('Agendada', 'Em Atendimento', 'Finalizada')
-        ORDER BY c.data_hora DESC
-        LIMIT 1
-    ");
+    if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+        $today = date('Y-m-d');
+        $path = 'tb_consulta?select=*,tb_clinica(nome)&id_paciente=eq.' . rawurlencode($idPaciente) . '&' . supabase_day_range_query($today)
+            . '&status=in.(Agendada,Em%20Atendimento,Finalizada)&order=data_hora.desc&limit=1';
+        $res = supabase_request('GET', $path);
+        $consulta = ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) ? $res['body'][0] : null;
+
+        if (!$consulta) {
+            return [
+                'tem_consulta' => false,
+                'mensagem'     => 'Você não possui consulta agendada para hoje.',
+            ];
+        }
+
+        $idClinica = $consulta['id_clinica'] ?? null;
+        $posicao = 0;
+        $pacientesAFrente = 0;
+        $tempoEstimado = '-';
+
+        if (in_array($consulta['status'], ['Agendada', 'Em Atendimento'], true)) {
+            $posicao = calcularPosicaoFila($pdo, $idClinica, $consulta['id_consulta']);
+            $pacientesAFrente = max(0, $posicao - 1);
+        }
+
+        $statusExibicao = $consulta['status'];
+        if ($consulta['status'] === 'Agendada') {
+            $statusExibicao = 'Aguardando';
+            $tempoEstimado = obterTempoEstimado($pacientesAFrente);
+        } elseif ($consulta['status'] === 'Em Atendimento') {
+            $tempoEstimado = 'Em atendimento';
+            $pacientesAFrente = 0;
+        } elseif ($consulta['status'] === 'Finalizada') {
+            $statusExibicao = 'Finalizado';
+            $tempoEstimado = '-';
+        }
+
+        $rc = relation_first($consulta['tb_clinica'] ?? []);
+        return [
+            'tem_consulta'       => true,
+            'nome_clinica'       => $rc['nome'] ?? $consulta['nome_clinica'] ?? null,
+            'data_hora'          => formatarDataHora($consulta['data_hora']),
+            'status'             => $statusExibicao,
+            'posicao'            => $posicao,
+            'pacientes_a_frente' => $pacientesAFrente,
+            'tempo_estimado'     => $tempoEstimado,
+            'id_consulta'        => $consulta['id_consulta'],
+        ];
+    }
+
+    $stmt = $pdo->prepare("\n        SELECT c.*, cl.nome AS nome_clinica\n        FROM tb_consulta c\n        INNER JOIN tb_clinica cl ON cl.id_clinica = c.id_clinica\n                WHERE c.id_paciente = ?\n                    AND DATE(c.data_hora) = CURRENT_DATE\n          AND c.status IN ('Agendada', 'Em Atendimento', 'Finalizada')\n        ORDER BY c.data_hora DESC\n        LIMIT 1\n    ");
     $stmt->execute([$idPaciente]);
     $consulta = $stmt->fetch();
 

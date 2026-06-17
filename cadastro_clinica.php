@@ -31,9 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validarCNPJ($cnpj)) {
         $erros[] = 'CNPJ inválido.';
     }
-    if ($telefone === '') {
-        $erros[] = 'Telefone é obrigatório.';
-    }
+    
     if ($rua === '' || $numero === '' || $bairro === '' || $cidade === '') {
         $erros[] = 'Preencha todos os campos do endereço.';
     }
@@ -58,54 +56,93 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if (empty($erros)) {
-        $stmt = $pdo->prepare('SELECT id_clinica FROM tb_clinica WHERE cnpj = ?');
-        $stmt->execute([formatarCNPJ($cnpj)]);
-        if ($stmt->fetch()) {
-            $erros[] = 'CNPJ já cadastrado.';
+        if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+            $res = supabase_request('GET', 'tb_clinica?select=id_clinica&cnpj=eq.' . rawurlencode(formatarCNPJ($cnpj)) . '&limit=1');
+            if ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) {
+                $erros[] = 'CNPJ já cadastrado.';
+            }
+        } else {
+            $stmt = $pdo->prepare('SELECT id_clinica FROM tb_clinica WHERE cnpj = ?');
+            $stmt->execute([formatarCNPJ($cnpj)]);
+            if ($stmt->fetch()) {
+                $erros[] = 'CNPJ já cadastrado.';
+            }
         }
     }
 
     if (empty($erros)) {
-        try {
-            $pdo->beginTransaction();
+        if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+            try {
+                $body = [
+                    'nome' => $nome,
+                    'cnpj' => formatarCNPJ($cnpj),
+                    'telefone' => formatarTelefone($telefone),
+                    'descricao' => $descricao !== '' ? $descricao : null,
+                    'hora_inicio' => $hora_inicio,
+                    'hora_fim' => $hora_fim,
+                    'dias_atendimento' => implode(',', $dias),
+                ];
+                $res = supabase_insert('tb_clinica', $body);
+                $idClinica = isset($res[0]['id_clinica']) ? (int)$res[0]['id_clinica'] : null;
+                if (!$idClinica) throw new Exception('Não foi possível obter id da clínica (API).');
 
-            // Em PostgreSQL, usar RETURNING para obter o id inserido
-            $stmt = $pdo->prepare('
-                INSERT INTO tb_clinica (nome, cnpj, telefone, descricao, hora_inicio, hora_fim, dias_atendimento)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                RETURNING id_clinica
-            ');
-            $stmt->execute([
-                $nome,
-                formatarCNPJ($cnpj),
-                formatarTelefone($telefone),
-                $descricao !== '' ? $descricao : null,
-                $hora_inicio,
-                $hora_fim,
-                implode(',', $dias),
-            ]);
-            $idClinica = (int) $stmt->fetchColumn();
+                supabase_insert('tb_endereco', [
+                    'rua' => $rua,
+                    'numero' => $numero,
+                    'bairro' => $bairro,
+                    'cidade' => $cidade,
+                    'cep' => formatarCEP($cep),
+                    'id_clinica' => $idClinica,
+                ]);
 
-            $stmt = $pdo->prepare('
-                INSERT INTO tb_endereco (rua, numero, bairro, cidade, cep, id_clinica)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ');
-            $stmt->execute([
-                $rua,
-                $numero,
-                $bairro,
-                $cidade,
-                formatarCEP($cep),
-                $idClinica,
-            ]);
+                setFlash('success', 'Clínica cadastrada! Agora cadastre o gestor responsável.');
+                header('Location: cadastro_gestor.php?id_clinica=' . $idClinica);
+                exit;
+            } catch (Exception $e) {
+                $erros[] = $e->getMessage() ?: 'Erro ao cadastrar clínica (API).';
+            }
+        } else {
+            try {
+                $pdo->beginTransaction();
 
-            $pdo->commit();
-            setFlash('success', 'Clínica cadastrada! Agora cadastre o gestor responsável.');
-            header('Location: cadastro_gestor.php?id_clinica=' . $idClinica);
-            exit;
-        } catch (PDOException $e) {
-            $pdo->rollBack();
-            $erros[] = 'Erro ao cadastrar clínica. Tente novamente.';
+                // Em PostgreSQL, usar RETURNING para obter o id inserido
+                $stmt = $pdo->prepare('
+                    INSERT INTO tb_clinica (nome, cnpj, telefone, descricao, hora_inicio, hora_fim, dias_atendimento)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id_clinica
+                ');
+                $stmt->execute([
+                    $nome,
+                    formatarCNPJ($cnpj),
+                    formatarTelefone($telefone),
+                    $descricao !== '' ? $descricao : null,
+                    $hora_inicio,
+                    $hora_fim,
+                    implode(',', $dias),
+                ]);
+                $idClinica = (int) $stmt->fetchColumn();
+
+                $stmt = $pdo->prepare('
+                    INSERT INTO tb_endereco (rua, numero, bairro, cidade, cep, id_clinica)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ');
+                $stmt->execute([
+                    $rua,
+                    $numero,
+                    $bairro,
+                    $cidade,
+                    formatarCEP($cep),
+                    $idClinica,
+                ]);
+
+                $pdo->commit();
+                setFlash('success', 'Clínica cadastrada! Agora cadastre o gestor responsável.');
+                header('Location: cadastro_gestor.php?id_clinica=' . $idClinica);
+                exit;
+            } catch (PDOException $e) {
+                $pdo->rollBack();
+                $erros[] = 'Erro ao cadastrar clínica. Tente novamente.';
+            }
         }
     }
 }

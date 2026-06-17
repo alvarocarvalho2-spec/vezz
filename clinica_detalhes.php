@@ -12,14 +12,55 @@ if ($idClinica <= 0) {
     exit;
 }
 
-$stmt = $pdo->prepare("
+if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+    $res = supabase_request('GET', 'tb_clinica?select=*,tb_endereco(rua,numero,bairro,cidade,cep)&id_clinica=eq.' . rawurlencode($idClinica) . '&limit=1');
+    $clinica = null;
+    if ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) {
+        $c = $res['body'][0];
+        $addr = relation_first($c['tb_endereco'] ?? []);
+
+        // Se o relacionamento não retornou endereço, buscar explicitamente
+        if (empty($addr) || (empty($addr['rua']) && empty($addr['numero']) && empty($addr['bairro']) && empty($addr['cidade']) && empty($addr['cep']))) {
+            try {
+                $r2 = supabase_request('GET', 'tb_endereco?select=rua,numero,bairro,cidade,cep&id_clinica=eq.' . rawurlencode($idClinica) . '&limit=1');
+                if ($r2['status'] >= 200 && is_array($r2['body']) && count($r2['body']) > 0) {
+                    $addr = $r2['body'][0];
+                }
+            } catch (Exception $e) {
+                // silencioso
+            }
+        }
+
+        // Se ainda estiver vazio, registrar debug local para inspeção (apenas quando faltarem campos)
+        if (empty($addr) || (empty($addr['rua']) && empty($addr['numero']) && empty($addr['bairro']) && empty($addr['cidade']) && empty($addr['cep']))) {
+            $logDir = __DIR__ . '/logs';
+            if (!is_dir($logDir)) @mkdir($logDir, 0755, true);
+            $logFile = $logDir . '/debug_supabase.log';
+            $entry = [
+                'ts' => date('c'),
+                'file' => 'clinica_detalhes.php',
+                'id_clinica' => $idClinica,
+                'response_clinica' => $c,
+                'response_endereco' => $addr,
+            ];
+            @file_put_contents($logFile, json_encode($entry, JSON_UNESCAPED_UNICODE) . "\n", FILE_APPEND | LOCK_EX);
+        }
+
+        $clinica = array_merge($c, $addr);
+        // garantir chaves de endereço mesmo quando ausentes para evitar warnings
+        $defaults = ['rua' => null, 'numero' => null, 'bairro' => null, 'cidade' => null, 'cep' => null];
+        $clinica = array_merge($defaults, $clinica);
+    }
+} else {
+    $stmt = $pdo->prepare("
     SELECT c.*, e.rua, e.numero, e.bairro, e.cidade, e.cep
     FROM tb_clinica c
     INNER JOIN tb_endereco e ON e.id_clinica = c.id_clinica
     WHERE c.id_clinica = ?
 ");
-$stmt->execute([$idClinica]);
-$clinica = $stmt->fetch();
+    $stmt->execute([$idClinica]);
+    $clinica = $stmt->fetch();
+}
 
 if (!$clinica) {
     setFlash('danger', 'Clínica não encontrada.');
@@ -48,16 +89,16 @@ require_once __DIR__ . '/includes/header.php';
                     <div class="col-md-6 mb-3">
                         <h6 class="text-muted">Endereço</h6>
                         <p class="mb-0">
-                            <?= e($clinica['rua']) ?>, <?= e($clinica['numero']) ?><br>
-                            <?= e($clinica['bairro']) ?> - <?= e($clinica['cidade']) ?><br>
-                            CEP: <?= e($clinica['cep']) ?>
+                            <?= e($clinica['rua'] ?? '') ?>, <?= e($clinica['numero'] ?? '') ?><br>
+                            <?= e($clinica['bairro'] ?? '') ?> - <?= e($clinica['cidade'] ?? '') ?><br>
+                            CEP: <?= e($clinica['cep'] ?? '') ?>
                         </p>
                     </div>
                     <div class="col-md-6 mb-3">
                         <h6 class="text-muted">Contato</h6>
                         <p class="mb-0">
-                            <i class="fa-solid fa-phone"></i> <?= e($clinica['telefone']) ?><br>
-                            <i class="fa-solid fa-building"></i> CNPJ: <?= e($clinica['cnpj']) ?>
+                            <i class="fa-solid fa-phone"></i> <?= e($clinica['telefone'] ?? '') ?><br>
+                            <i class="fa-solid fa-building"></i> CNPJ: <?= e($clinica['cnpj'] ?? '') ?>
                         </p>
                     </div>
                 </div>

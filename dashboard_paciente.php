@@ -12,10 +12,32 @@ $idPaciente = (int) $_SESSION['usuario_id'];
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cancelar') {
     $idConsulta = (int) ($_POST['id_consulta'] ?? 0);
 
-    $stmt = $pdo->prepare("
-        SELECT id_consulta FROM tb_consulta
-        WHERE id_consulta = ? AND id_paciente = ? AND status = 'Agendada' AND data_hora > CURRENT_TIMESTAMP
-    ");
+    if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+        // Buscar consulta e validar condição em PHP (evita usar CURRENT_TIMESTAMP no PostgREST)
+        $res = supabase_request('GET', 'tb_consulta?select=id_consulta,id_clinica,data_hora,status&id_consulta=eq.' . rawurlencode($idConsulta) . '&id_paciente=eq.' . rawurlencode($idPaciente) . '&limit=1');
+        $ok = false;
+        if ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) {
+            $row = $res['body'][0];
+            if (($row['status'] ?? '') === 'Agendada' && (!empty($row['data_hora']) && strtotime($row['data_hora']) > time())) {
+                try {
+                    supabase_update('tb_consulta', 'id_consulta=eq.' . rawurlencode($idConsulta), ['status' => 'Cancelada']);
+                    setFlash('success', 'Consulta cancelada com sucesso.');
+                    $ok = true;
+                } catch (Exception $e) {
+                    error_log('supabase_update cancelamento error: ' . $e->getMessage());
+                    setFlash('danger', 'Erro ao cancelar a consulta (API).');
+                }
+            }
+        }
+        if (!$ok) {
+            setFlash('danger', 'Não foi possível cancelar esta consulta.');
+        }
+        header('Location: dashboard_paciente.php');
+        exit;
+    }
+
+    // fallback PDO
+    $stmt = $pdo->prepare("\n        SELECT id_consulta FROM tb_consulta\n        WHERE id_consulta = ? AND id_paciente = ? AND status = 'Agendada' AND data_hora > CURRENT_TIMESTAMP\n    ");
     $stmt->execute([$idConsulta, $idPaciente]);
 
     if ($stmt->fetch()) {
@@ -30,29 +52,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cancela
 }
 
 // Próxima consulta futura
-$stmt = $pdo->prepare("
-    SELECT c.*, cl.nome AS nome_clinica
-    FROM tb_consulta c
-    INNER JOIN tb_clinica cl ON cl.id_clinica = c.id_clinica
-    WHERE c.id_paciente = ? AND c.status = 'Agendada' AND c.data_hora >= CURRENT_TIMESTAMP
-    ORDER BY c.data_hora ASC
-    LIMIT 1
-");
-$stmt->execute([$idPaciente]);
-$proximaConsulta = $stmt->fetch();
+$proximaConsulta = null;
+if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+    $res = supabase_request('GET', 'tb_consulta?select=*,tb_clinica(nome)&id_paciente=eq.' . rawurlencode($idPaciente) . '&status=eq.Agendada&data_hora=gte.' . rawurlencode(date('Y-m-d\TH:i:s')) . '&order=data_hora.asc&limit=1');
+    if ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) {
+        $proximaConsulta = $res['body'][0];
+        $rc = relation_first($proximaConsulta['tb_clinica'] ?? []);
+        $proximaConsulta['nome_clinica'] = $rc['nome'] ?? null;
+    }
+} else {
+    $stmt = $pdo->prepare("\n    SELECT c.*, cl.nome AS nome_clinica\n    FROM tb_consulta c\n    INNER JOIN tb_clinica cl ON cl.id_clinica = c.id_clinica\n    WHERE c.id_paciente = ? AND c.status = 'Agendada' AND c.data_hora >= CURRENT_TIMESTAMP\n    ORDER BY c.data_hora ASC\n    LIMIT 1\n");
+    $stmt->execute([$idPaciente]);
+    $proximaConsulta = $stmt->fetch();
+}
 
 // Consulta de hoje para fila
-$stmt = $pdo->prepare("
-    SELECT c.*, cl.nome AS nome_clinica
-    FROM tb_consulta c
-    INNER JOIN tb_clinica cl ON cl.id_clinica = c.id_clinica
-    WHERE c.id_paciente = ? AND DATE(c.data_hora) = CURRENT_DATE
-      AND c.status IN ('Agendada', 'Em Atendimento')
-    ORDER BY c.data_hora ASC
-    LIMIT 1
-");
-$stmt->execute([$idPaciente]);
-$consultaHoje = $stmt->fetch();
+$consultaHoje = null;
+if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+    $day = date('Y-m-d');
+    $path = 'tb_consulta?select=*,tb_clinica(nome)&id_paciente=eq.' . rawurlencode($idPaciente) . '&' . supabase_day_range_query($day) . '&status=in.(Agendada,Em%20Atendimento)&order=data_hora.asc&limit=1';
+    $res = supabase_request('GET', $path);
+    if ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) {
+        $consultaHoje = $res['body'][0];
+        $rc = relation_first($consultaHoje['tb_clinica'] ?? []);
+        $consultaHoje['nome_clinica'] = $rc['nome'] ?? null;
+    }
+} else {
+    $stmt = $pdo->prepare("\n    SELECT c.*, cl.nome AS nome_clinica\n    FROM tb_consulta c\n    INNER JOIN tb_clinica cl ON cl.id_clinica = c.id_clinica\n    WHERE c.id_paciente = ? AND DATE(c.data_hora) = CURRENT_DATE\n      AND c.status IN ('Agendada', 'Em Atendimento')\n    ORDER BY c.data_hora ASC\n    LIMIT 1\n");
+    $stmt->execute([$idPaciente]);
+    $consultaHoje = $stmt->fetch();
+}
 
 $posicaoFila = 0;
 $tempoEstimado = '-';
@@ -62,27 +91,104 @@ if ($consultaHoje) {
 }
 
 // Consultas futuras (RF010)
-$stmt = $pdo->prepare("
-    SELECT c.*, cl.nome AS nome_clinica
-    FROM tb_consulta c
-    INNER JOIN tb_clinica cl ON cl.id_clinica = c.id_clinica
-    WHERE c.id_paciente = ? AND c.status = 'Agendada' AND c.data_hora >= CURRENT_TIMESTAMP
-    ORDER BY c.data_hora ASC
-");
-$stmt->execute([$idPaciente]);
-$consultasFuturas = $stmt->fetchAll();
+$consultasFuturas = [];
+if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+    $res = supabase_request('GET', 'tb_consulta?select=*,tb_clinica(nome)&id_paciente=eq.' . rawurlencode($idPaciente) . '&status=eq.Agendada&data_hora=gte.' . rawurlencode(date('Y-m-d\TH:i:s')) . '&order=data_hora.asc');
+    if ($res['status'] >= 200 && is_array($res['body'])) {
+        $consultasFuturas = $res['body'];
+        foreach ($consultasFuturas as &$c) {
+            $rc = relation_first($c['tb_clinica'] ?? []);
+            $c['nome_clinica'] = $rc['nome'] ?? null;
+        }
+        unset($c);
+    }
+} else {
+    $stmt = $pdo->prepare("\n    SELECT c.*, cl.nome AS nome_clinica\n    FROM tb_consulta c\n    INNER JOIN tb_clinica cl ON cl.id_clinica = c.id_clinica\n    WHERE c.id_paciente = ? AND c.status = 'Agendada' AND c.data_hora >= CURRENT_TIMESTAMP\n    ORDER BY c.data_hora ASC\n");
+    $stmt->execute([$idPaciente]);
+    $consultasFuturas = $stmt->fetchAll();
+}
 
 // Histórico (RF011) — consultas finalizadas
-$stmt = $pdo->prepare("
-    SELECT c.*, cl.nome AS nome_clinica
-    FROM tb_consulta c
-    INNER JOIN tb_clinica cl ON cl.id_clinica = c.id_clinica
-    WHERE c.id_paciente = ? AND c.status = 'Finalizada'
-    ORDER BY c.data_hora DESC
-    LIMIT 50
-");
-$stmt->execute([$idPaciente]);
-$historico = $stmt->fetchAll();
+$historico = [];
+if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+    $res = supabase_request('GET', 'tb_consulta?select=*,tb_clinica(nome)&id_paciente=eq.' . rawurlencode($idPaciente) . '&status=eq.Finalizada&order=data_hora.desc&limit=50');
+    if ($res['status'] >= 200 && is_array($res['body'])) {
+        $historico = $res['body'];
+        foreach ($historico as &$h) {
+            $rc = relation_first($h['tb_clinica'] ?? []);
+            $h['nome_clinica'] = $rc['nome'] ?? null;
+        }
+        unset($h);
+    }
+} else {
+// Enriquecer nomes de clínica em lote caso relacionamento `tb_clinica` não venha populado
+$missingClinicIds = [];
+$collectFrom = array_merge($consultasFuturas, $historico);
+foreach ($collectFrom as $it) {
+    if (empty($it['nome_clinica']) && !empty($it['id_clinica'])) {
+        $missingClinicIds[] = (int)$it['id_clinica'];
+    }
+}
+if (!empty($proximaConsulta) && empty($proximaConsulta['nome_clinica']) && !empty($proximaConsulta['id_clinica'])) {
+    $missingClinicIds[] = (int)$proximaConsulta['id_clinica'];
+}
+if (!empty($consultaHoje) && empty($consultaHoje['nome_clinica']) && !empty($consultaHoje['id_clinica'])) {
+    $missingClinicIds[] = (int)$consultaHoje['id_clinica'];
+}
+$missingClinicIds = array_values(array_unique($missingClinicIds));
+if (!empty($missingClinicIds) && defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+    try {
+        $in = implode(',', $missingClinicIds);
+        $r = supabase_request('GET', 'tb_clinica?select=id_clinica,nome&id_clinica=in.(' . rawurlencode($in) . ')&limit=100');
+        if ($r['status'] >= 200 && is_array($r['body']) && count($r['body']) > 0) {
+            $byId = [];
+            foreach ($r['body'] as $rc) {
+                $byId[$rc['id_clinica']] = $rc['nome'] ?? null;
+            }
+            // aplicar aos arrays
+            foreach ($consultasFuturas as &$c) {
+                if (empty($c['nome_clinica']) && !empty($c['id_clinica']) && isset($byId[$c['id_clinica']])) {
+                    $c['nome_clinica'] = $byId[$c['id_clinica']];
+                }
+            }
+            unset($c);
+            foreach ($historico as &$h) {
+                if (empty($h['nome_clinica']) && !empty($h['id_clinica']) && isset($byId[$h['id_clinica']])) {
+                    $h['nome_clinica'] = $byId[$h['id_clinica']];
+                }
+            }
+            unset($h);
+            if (!empty($proximaConsulta) && empty($proximaConsulta['nome_clinica']) && !empty($proximaConsulta['id_clinica']) && isset($byId[$proximaConsulta['id_clinica']])) {
+                $proximaConsulta['nome_clinica'] = $byId[$proximaConsulta['id_clinica']];
+            }
+            if (!empty($consultaHoje) && empty($consultaHoje['nome_clinica']) && !empty($consultaHoje['id_clinica']) && isset($byId[$consultaHoje['id_clinica']])) {
+                $consultaHoje['nome_clinica'] = $byId[$consultaHoje['id_clinica']];
+            }
+        }
+    } catch (Exception $e) {
+        // silencioso
+    }
+}
+// Log quando nomes de clínica estiverem faltando após tentativa de enriquecimento
+$logMissing = [];
+foreach (array_merge($consultasFuturas, $historico) as $it) {
+    if (empty($it['nome_clinica']) && !empty($it['id_clinica'])) {
+        $logMissing[] = (int)$it['id_clinica'];
+    }
+}
+if (!empty($proximaConsulta) && empty($proximaConsulta['nome_clinica']) && !empty($proximaConsulta['id_clinica'])) $logMissing[] = (int)$proximaConsulta['id_clinica'];
+if (!empty($consultaHoje) && empty($consultaHoje['nome_clinica']) && !empty($consultaHoje['id_clinica'])) $logMissing[] = (int)$consultaHoje['id_clinica'];
+$logMissing = array_values(array_unique($logMissing));
+if (!empty($logMissing)) {
+    $logDir = __DIR__ . '/logs'; if (!is_dir($logDir)) @mkdir($logDir, 0755, true);
+    $logFile = $logDir . '/debug_supabase.log';
+    $entry = ['ts' => date('c'), 'file' => 'dashboard_paciente.php', 'missing_ids' => $logMissing];
+    @file_put_contents($logFile, json_encode($entry, JSON_UNESCAPED_UNICODE) . "\n", FILE_APPEND | LOCK_EX);
+}
+    $stmt = $pdo->prepare("\n    SELECT c.*, cl.nome AS nome_clinica\n    FROM tb_consulta c\n    INNER JOIN tb_clinica cl ON cl.id_clinica = c.id_clinica\n    WHERE c.id_paciente = ? AND c.status = 'Finalizada'\n    ORDER BY c.data_hora DESC\n    LIMIT 50\n");
+    $stmt->execute([$idPaciente]);
+    $historico = $stmt->fetchAll();
+}
 
 require_once __DIR__ . '/includes/header.php';
 ?>

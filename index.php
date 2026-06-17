@@ -3,52 +3,34 @@
 $pageTitle = 'Início';
 
 require_once __DIR__ . '/includes/config.php';
-
 require_once __DIR__ . '/includes/auth.php';
-
 require_once __DIR__ . '/includes/functions.php';
 
-
-
 $nomeBusca = trim($_GET['nome'] ?? '');
-
 $cidadeBusca = trim($_GET['cidade'] ?? '');
 
-
-
 if ($nomeBusca !== '' || $cidadeBusca !== '') {
-
     header('Location: pesquisar_clinicas.php?nome=' . urlencode($nomeBusca) . '&cidade=' . urlencode($cidadeBusca));
-
     exit;
-
 }
 
-
-
-$stmt = $pdo->query("
-
-    SELECT c.id_clinica, c.nome, c.telefone, e.cidade
-
-    FROM tb_clinica c
-
-    INNER JOIN tb_endereco e ON e.id_clinica = c.id_clinica
-
-    ORDER BY c.nome ASC
-
-    LIMIT 4
-
-");
-
-$clinicasDestaque = $stmt->fetchAll();
-
-
+// Buscar clínicas de destaque — usa função que suporta tanto PDO quanto Supabase API
+if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+    $clinicas = pesquisarClinicas($pdo, '', '');
+    $clinicasDestaque = array_slice($clinicas, 0, 4);
+} else {
+    $stmt = $pdo->query(
+        "SELECT c.id_clinica, c.nome, c.telefone, e.cidade
+        FROM tb_clinica c
+        INNER JOIN tb_endereco e ON e.id_clinica = c.id_clinica
+        ORDER BY c.nome ASC
+        LIMIT 4"
+    );
+    $clinicasDestaque = $stmt->fetchAll();
+}
 
 require_once __DIR__ . '/includes/header.php';
-
 ?>
-
-
 
 <div class="hero-section text-center">
 
@@ -79,7 +61,6 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 
 </div>
-
 
 
 <div class="search-box mb-5">
@@ -117,7 +98,6 @@ require_once __DIR__ . '/includes/header.php';
     </form>
 
 </div>
-
 
 
 <div class="row mb-4">
@@ -167,7 +147,6 @@ require_once __DIR__ . '/includes/header.php';
 </div>
 
 
-
 <?php if (!empty($clinicasDestaque)): ?>
 
 <h4 class="mb-3">Clínicas Cadastradas</h4>
@@ -186,11 +165,11 @@ require_once __DIR__ . '/includes/header.php';
 
                 <p class="text-muted small mb-2">
 
-                    <i class="fa-solid fa-location-dot"></i> <?= e($clinica['cidade']) ?>
+                    <i class="fa-solid fa-location-dot"></i> <?= e($clinica['cidade'] ?? '') ?>
 
                 </p>
 
-                <p class="small mb-3"><i class="fa-solid fa-phone"></i> <?= e($clinica['telefone']) ?></p>
+                <p class="small mb-3"><i class="fa-solid fa-phone"></i> <?= e($clinica['telefone'] ?? '') ?></p>
 
                 <a href="clinica_detalhes.php?id=<?= (int) $clinica['id_clinica'] ?>" class="btn btn-outline-primary btn-sm">
 
@@ -211,6 +190,4 @@ require_once __DIR__ . '/includes/header.php';
 <?php endif; ?>
 
 
-
 <?php require_once __DIR__ . '/includes/footer.php'; ?>
-

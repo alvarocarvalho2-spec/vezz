@@ -89,16 +89,25 @@ $clinicas = pesquisarClinicas($pdo, $nome, $cidade);
                     <h5 class="card-title"><?= e($clinica['nome']) ?></h5>
 
                     <p class="mb-1">
-
                         <i class="fa-solid fa-location-dot text-primary"></i>
-
-                        <?= e($clinica['rua']) ?>, <?= e($clinica['numero']) ?> -
-
-                        <?= e($clinica['bairro']) ?>, <?= e($clinica['cidade']) ?>
-
+                        <?php
+                        $rua = trim((string)($clinica['rua'] ?? ''));
+                        $numero = trim((string)($clinica['numero'] ?? ''));
+                        $bairro = trim((string)($clinica['bairro'] ?? ''));
+                        $cidade = trim((string)($clinica['cidade'] ?? ''));
+                        if ($rua === '' && $numero === '' && $bairro === '' && $cidade === '') {
+                            echo 'Endereço não cadastrado';
+                        } else {
+                            $parts = [];
+                            if ($rua !== '') $parts[] = $rua . ($numero !== '' ? ', ' . $numero : '');
+                            if ($bairro !== '') $parts[] = $bairro;
+                            if ($cidade !== '') $parts[] = $cidade;
+                            echo e(implode(' - ', $parts));
+                        }
+                        ?>
                     </p>
 
-                    <p class="mb-3"><i class="fa-solid fa-phone text-primary"></i> <?= e($clinica['telefone']) ?></p>
+                    <p class="mb-3"><i class="fa-solid fa-phone text-primary"></i> <?= e($clinica['telefone'] ?? '') ?></p>
 
                     <a href="clinica_detalhes.php?id=<?= (int) $clinica['id_clinica'] ?>"
 

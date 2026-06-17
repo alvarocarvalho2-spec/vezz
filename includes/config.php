@@ -39,25 +39,38 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-try {
-    // Forçar SSL/TLS para conexões externas (ex: Supabase)
-    $dsn = sprintf('pgsql:host=%s;port=%s;dbname=%s;sslmode=require', $DB_HOST, $DB_PORT, $DB_NAME);
+// Se SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY estiverem definidos, usar API em vez de PDO
+$use_supabase_api = false;
+$supabase_url = getenv('SUPABASE_URL') ?: '';
+$supabase_key = getenv('SUPABASE_SERVICE_ROLE_KEY') ?: getenv('SUPABASE_ANON_KEY') ?: '';
+if (!empty($supabase_url) && !empty($supabase_key)) {
+    $use_supabase_api = true;
+    // não inicializa PDO para evitar erro de conexão quando só houver API disponível
+    $pdo = null;
+} else {
+    try {
+        // Forçar SSL/TLS para conexões externas (ex: Supabase)
+        $dsn = sprintf('pgsql:host=%s;port=%s;dbname=%s;sslmode=require', $DB_HOST, $DB_PORT, $DB_NAME);
 
-    $pdo = new PDO(
-        $dsn,
-        $DB_USER,
-        $DB_PASS,
-        [
-            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            PDO::ATTR_EMULATE_PREPARES   => false,
-        ]
-    );
+        $pdo = new PDO(
+            $dsn,
+            $DB_USER,
+            $DB_PASS,
+            [
+                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES   => false,
+            ]
+        );
 
-    // garantir UTF-8
-    $pdo->exec("SET NAMES 'UTF8'");
+        // garantir UTF-8
+        $pdo->exec("SET NAMES 'UTF8'");
 
-} catch (PDOException $e) {
-    // Falha na conexão — mostrar mensagem útil em ambiente local
-    die('Erro de conexão com o banco de dados (Postgres): ' . $e->getMessage());
+    } catch (PDOException $e) {
+        // Falha na conexão — mostrar mensagem útil em ambiente local
+        die('Erro de conexão com o banco de dados (Postgres): ' . $e->getMessage());
+    }
 }
+
+// Disponibilidade da API Supabase para outras partes do código
+define('USE_SUPABASE_API', $use_supabase_api);

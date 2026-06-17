@@ -1,0 +1,11 @@
+.git
+vendor
+node_modules
+tests
+logs
+*.log
+*.bak
+docs/tasks*
+.env
+/.vscode
+/.idea

@@ -39,26 +39,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if (empty($erros)) {
-        $stmt = $pdo->prepare('SELECT id_paciente FROM tb_paciente WHERE cpf = ? OR email = ?');
-        $stmt->execute([formatarCPF($cpf), $email]);
-        if ($stmt->fetch()) {
-            $erros[] = 'CPF ou e-mail já cadastrado.';
+        if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+            $cpfFmt = formatarCPF($cpf);
+            $path = 'tb_paciente?select=id_paciente&or=(cpf.eq.' . rawurlencode($cpfFmt) . ',email.eq.' . rawurlencode($email) . ')&limit=1';
+            $res = supabase_request('GET', $path);
+            if ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) {
+                $erros[] = 'CPF ou e-mail já cadastrado.';
+            } else {
+                try {
+                    supabase_insert('tb_paciente', [
+                        'nome' => $nome,
+                        'cpf' => $cpfFmt,
+                        'email' => $email,
+                        'telefone' => formatarTelefone($telefone),
+                        'senha' => password_hash($senha, PASSWORD_BCRYPT),
+                    ]);
+                    setFlash('success', 'Cadastro realizado com sucesso! Faça login para continuar.');
+                    header('Location: login.php');
+                    exit;
+                } catch (Exception $e) {
+                    $erros[] = $e->getMessage() ?: 'Erro ao criar usuário (API).';
+                }
+            }
         } else {
-            $stmt = $pdo->prepare('
-                INSERT INTO tb_paciente (nome, cpf, email, telefone, senha)
-                VALUES (?, ?, ?, ?, ?)
-            ');
-            $stmt->execute([
-                $nome,
-                formatarCPF($cpf),
-                $email,
-                formatarTelefone($telefone),
-                password_hash($senha, PASSWORD_BCRYPT),
-            ]);
+            $stmt = $pdo->prepare('SELECT id_paciente FROM tb_paciente WHERE cpf = ? OR email = ?');
+            $stmt->execute([formatarCPF($cpf), $email]);
+            if ($stmt->fetch()) {
+                $erros[] = 'CPF ou e-mail já cadastrado.';
+            } else {
+                $stmt = $pdo->prepare('
+                    INSERT INTO tb_paciente (nome, cpf, email, telefone, senha)
+                    VALUES (?, ?, ?, ?, ?)
+                ');
+                $stmt->execute([
+                    $nome,
+                    formatarCPF($cpf),
+                    $email,
+                    formatarTelefone($telefone),
+                    password_hash($senha, PASSWORD_BCRYPT),
+                ]);
 
-            setFlash('success', 'Cadastro realizado com sucesso! Faça login para continuar.');
-            header('Location: login.php');
-            exit;
+                setFlash('success', 'Cadastro realizado com sucesso! Faça login para continuar.');
+                header('Location: login.php');
+                exit;
+            }
         }
     }
 }

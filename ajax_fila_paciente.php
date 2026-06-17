@@ -12,23 +12,41 @@ if (!isLoggedIn() || getUserType() !== 'paciente') {
 $id_paciente = getUserId();
 $id_consulta = isset($_GET['id_consulta']) ? (int)$_GET['id_consulta'] : 0;
 
-$stmt = $pdo->prepare("SELECT c.*, cl.nome AS clinica_nome
+if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+    $today = date('Y-m-d');
+    $path = 'tb_consulta?select=*,tb_clinica(nome)&id_consulta=eq.' . rawurlencode($id_consulta) . '&id_paciente=eq.' . rawurlencode($id_paciente) . '&' . supabase_day_range_query($today) . '&limit=1';
+    $res = supabase_request('GET', $path);
+    $consulta = null;
+    if ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) {
+        $consulta = $res['body'][0];
+        $rc = relation_first($consulta['tb_clinica'] ?? []);
+        $consulta['clinica_nome'] = $rc['nome'] ?? null;
+    }
+    if (!$consulta) {
+        echo '<div class="alert alert-warning alert-vezz">Consulta não encontrada.</div>';
+        exit;
+    }
+    $posicao = calcularPosicaoFila($pdo, (int)$consulta['id_clinica'], $id_consulta);
+    $tempoEstimado = obterTempoEstimado($posicao);
+} else {
+    $stmt = $pdo->prepare("SELECT c.*, cl.nome AS clinica_nome
                        FROM tb_consulta c
                        JOIN tb_clinica cl ON cl.id_clinica = c.id_clinica
                                              WHERE c.id_consulta = :id
                                                  AND c.id_paciente = :id_paciente
                                                  AND DATE(c.data_hora) = CURRENT_DATE
                        LIMIT 1");
-$stmt->execute([':id' => $id_consulta, ':id_paciente' => $id_paciente]);
-$consulta = $stmt->fetch();
+    $stmt->execute([':id' => $id_consulta, ':id_paciente' => $id_paciente]);
+    $consulta = $stmt->fetch();
 
-if (!$consulta) {
-    echo '<div class="alert alert-warning alert-vezz">Consulta não encontrada.</div>';
-    exit;
+    if (!$consulta) {
+        echo '<div class="alert alert-warning alert-vezz">Consulta não encontrada.</div>';
+        exit;
+    }
+
+    $posicao = calcularPosicaoFila($pdo, (int)$consulta['id_clinica'], $id_consulta);
+    $tempoEstimado = obterTempoEstimado($posicao);
 }
-
-$posicao = calcularPosicaoFila((int)$consulta['id_clinica'], $id_consulta);
-$tempoEstimado = obterTempoEstimado($posicao);
 
 ?>
 <p class="text-vezz-secondary mb-1">Horário agendado</p>

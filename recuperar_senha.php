@@ -3,6 +3,9 @@ $pageTitle = 'Recuperar Senha';
 require_once __DIR__ . '/includes/config.php';
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/functions.php';
+if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+    require_once __DIR__ . '/includes/supabase_api.php';
+}
 
 if (isLoggedIn()) {
     header('Location: dashboard_paciente.php');
@@ -22,16 +25,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!validarEmail($email)) {
             $erros[] = 'Informe um e-mail válido.';
         } else {
-            $stmt = $pdo->prepare('SELECT id_paciente AS id, nome FROM tb_paciente WHERE email = ?');
-            $stmt->execute([$email]);
-            $usuario = $stmt->fetch();
-
             $tipo = 'paciente';
-            if (!$usuario) {
-                $stmt = $pdo->prepare('SELECT id_gestor AS id, nome FROM tb_gestor WHERE email = ?');
+            if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+                $res = supabase_request('GET', 'tb_paciente?select=id_paciente,nome&email=eq.' . rawurlencode($email));
+                $usuario = ($res['status'] >= 200 && is_array($res['body']) && count($res['body']) > 0) ? $res['body'][0] : null;
+                if (!$usuario) {
+                    $res2 = supabase_request('GET', 'tb_gestor?select=id_gestor,nome&email=eq.' . rawurlencode($email));
+                    $usuario = ($res2['status'] >= 200 && is_array($res2['body']) && count($res2['body']) > 0) ? $res2['body'][0] : null;
+                    $tipo = $usuario ? 'gestor' : 'paciente';
+                }
+                if ($usuario) {
+                    if (isset($usuario['id_paciente'])) $usuario['id'] = $usuario['id_paciente'];
+                    if (isset($usuario['id_gestor'])) $usuario['id'] = $usuario['id_gestor'];
+                }
+            } else {
+                $stmt = $pdo->prepare('SELECT id_paciente AS id, nome FROM tb_paciente WHERE email = ?');
                 $stmt->execute([$email]);
                 $usuario = $stmt->fetch();
-                $tipo = 'gestor';
+
+                $tipo = 'paciente';
+                if (!$usuario) {
+                    $stmt = $pdo->prepare('SELECT id_gestor AS id, nome FROM tb_gestor WHERE email = ?');
+                    $stmt->execute([$email]);
+                    $usuario = $stmt->fetch();
+                    $tipo = 'gestor';
+                }
             }
 
             if ($usuario) {
@@ -63,12 +81,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (empty($erros)) {
             $hash = password_hash($senha, PASSWORD_BCRYPT);
-            if ($tipo === 'paciente') {
-                $stmt = $pdo->prepare('UPDATE tb_paciente SET senha = ? WHERE email = ?');
+            if (defined('USE_SUPABASE_API') && USE_SUPABASE_API) {
+                if ($tipo === 'paciente') {
+                    supabase_update('tb_paciente', 'email=eq.' . rawurlencode($email), ['senha' => $hash]);
+                } else {
+                    supabase_update('tb_gestor', 'email=eq.' . rawurlencode($email), ['senha' => $hash]);
+                }
             } else {
-                $stmt = $pdo->prepare('UPDATE tb_gestor SET senha = ? WHERE email = ?');
+                if ($tipo === 'paciente') {
+                    $stmt = $pdo->prepare('UPDATE tb_paciente SET senha = ? WHERE email = ?');
+                } else {
+                    $stmt = $pdo->prepare('UPDATE tb_gestor SET senha = ? WHERE email = ?');
+                }
+                $stmt->execute([$hash, $email]);
             }
-            $stmt->execute([$hash, $email]);
 
             unset($_SESSION['recuperacao_email'], $_SESSION['recuperacao_tipo'], $_SESSION['recuperacao_nome']);
             setFlash('success', 'Senha redefinida com sucesso! Faça login com a nova senha.');
