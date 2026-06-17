@@ -9,6 +9,7 @@ RUN apt-get update \
         supervisor \
         git \
         unzip \
+        gettext-base \
         libpng-dev \
         libzip-dev \
         libonig-dev \
@@ -18,9 +19,11 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy nginx and supervisor configs
-COPY docker/nginx.conf /etc/nginx/sites-available/default
+# Copy nginx and supervisor configs (nginx config is a template to be rendered at runtime)
+COPY docker/nginx.conf /etc/nginx/sites-available/default.template
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Copy application
 WORKDIR /var/www/html
@@ -38,4 +41,4 @@ RUN if [ -f /usr/local/etc/php-fpm.d/www.conf ]; then \
             sed -i "s|;listen.mode = 0660|listen.mode = 0660|" /usr/local/etc/php-fpm.d/www.conf || true; \
         fi
 
-CMD ["/usr/bin/supervisord","-n","-c","/etc/supervisor/conf.d/supervisord.conf"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
