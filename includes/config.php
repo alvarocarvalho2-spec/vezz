@@ -39,7 +39,14 @@ $DB_PORT = getenv('DB_PORT') ?: getenv('SUPABASE_PORT') ?: '5432';
 $DB_NAME = getenv('DB_NAME') ?: getenv('SUPABASE_DB') ?: 'postgres';
 $DB_USER = getenv('DB_USER') ?: getenv('SUPABASE_USER') ?: 'postgres';
 $DB_PASS = getenv('DB_PASSWORD') ?: getenv('SUPABASE_PASSWORD') ?: '';
-$BASE_URL = getenv('BASE_URL') ?: '/VEZZ';
+$env_base = getenv('BASE_URL');
+// Se a variável estiver definida (mesmo vazia), respeitamos seu valor.
+// Caso não exista, usamos string vazia para permitir deploy na raiz do host.
+if ($env_base === false) {
+    $BASE_URL = '';
+} else {
+    $BASE_URL = $env_base;
+}
 
 define('BASE_URL', $BASE_URL);
 
